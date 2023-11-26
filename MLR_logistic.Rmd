@@ -1,0 +1,389 @@
+---
+title: "Multiple Linear Regression (MLR) and Logistic Models"
+author: "Chien-Lan Hsueh"
+date: "2022-06-30"
+output:
+  rmdformats::robobook: 
+    theme: cerulean
+    highlight: haddock
+    code_folding: none
+    df_print: paged
+  github_document:
+    toc: true
+    df_print: kable
+    html_preview: false
+    math_method: webtex
+  pdf_document:
+    latex_engine: xelatex
+    highlight: haddock
+    df_print: tibble
+  html_document:
+    toc: true
+    theme: cerulean
+    highlight: haddock
+    code_folding: none
+    df_print: paged
+---
+
+## Project Goal
+
+In this report, we conduct an exploratory data analysis (EDA) on the [Seoul Bike Sharing Demand](https://archive.ics.uci.edu/dataset/560/seoul+bike+sharing+demand) dataset. Then we fit  multiple linear regression models and with logistic regression models to make predictions on the two response variables: numeric `Rent_Count` and its re-coded variable `Rent_Many`. Model performances are then compared using accuracy metric.
+
+## Set up: Packages and Helper Functions
+
+In this task, we will use the following packages:
+
+- `here`: enables easy file referencing and builds file paths in a OS-independent way
+- `stats`: loads this before loading `tidyverse` to avoid masking some `tidyverse` functions
+- `tidyverse`: includes collections of useful packages like `dplyr` (data manipulation), `tidyr` (tidying data),  `ggplots` (creating graphs), etc.
+- `glue`: embeds and evaluates R expressions into strings to be printed as messages
+- `scales`: formats and labels scales nicely for better visualization
+- `GGally`: extends 'ggplot2' by combining geometric objects with transformed data
+- `corrplot`: Provides a visual exploratory tool on correlation matrix that supports automatic variable reordering to help detect hidden patterns among variables.
+- `Hmisc`: Contains many functions useful for data analysis, high-level graphics, utility operations, functions for computing sample size and power, simulation
+- `ggmosaic`: create visualizations of categorical data and is capable of producing bar charts, stacked bar charts, mosaic plots, and double decker plots.
+- `caret`: training and plotting classification and regression models
+- `broom`: tidy and unify the fit objects returned by most of the modeling functions
+- `modelr`:Functions for modelling that help you seamlessly integrate modelling into a pipeline of data manipulation and visualisation.
+
+```{r}
+if (!require("pacman")) utils::install.packages("pacman", dependencies = TRUE)
+
+pacman::p_load(
+  here,
+  stats,
+  tidyverse,
+  glue, scales,
+  GGally, corrplot, Hmisc, ggmosaic,
+  caret, broom, modelr
+)
+```
+
+And define the following helper functions:
+
+```{r}
+# string concatenation
+# ex: "act" %&% "5"
+'%&%' <- function(x, y) paste0(x, y)
+```
+
+### `fit_glm_models()`
+
+Perform fitting of multiple glm candidate models using cross validation. Use the best one from cross validation on the test set and summarize the metrics.
+  
+- Arguments:
+  - `response`: the response variable
+  - `models`: a vector of formula string
+  - `data_train`: training set
+  - `data_test`: test set
+  - `family`: family of error distribution used in glm()
+  - `metric`: what summary metric will be used to select the optimal model
+- Returned Value:
+  - A data frame to summarize the metric scores
+
+```{r}
+# fit multiple glm models and summarize the metrics
+fit_glm_models <- function(
+    response, models, 
+    data_train, data_test, 
+    family = c("gaussian", "binomial"), 
+    metric = c("RMSE", "Accuracy")){
+
+  # verify query family and metric arguments
+  family <- match.arg(family)
+  metric <- match.arg(metric)
+  
+  
+  # initial empty lists to save fittings, predictions and metric scores
+  lst_score <- c()
+  
+  # train models
+  for (x in models) {
+    fit <- train(
+      as.formula(x),
+      data = data_train,
+      method = "glm",
+      family = family,
+      metric = metric,
+      preProcess = c("center", "scale"),
+      trControl = trainControl(method = "cv", number = 5))
+    
+    # make prediction on test data
+    pred <- predict(fit, newdata = data_test)
+
+    # get metric
+    if(metric == "RMSE"){
+      score <-  modelr::rmse(fit, data_test)
+    } else if(metric == "Accuracy"){
+      score <- confusionMatrix(data_test[[response]], pred)$overall["Accuracy"]
+    }
+    
+    # save metric score
+    lst_score <- append(lst_score, round(score, 2))
+  
+    # print progress
+    print(glue(
+      "Fit model: '{x}' \n",
+      "{metric} = {score} \n"))
+  }
+  
+  # create a summary data frame
+  df_summary <- tibble(model = models, metric = metric, score = lst_score)
+  
+  # return all results
+  return(df_summary)
+}
+```
+
+## Data
+
+The [Seoul Bike Sharing Demand](https://archive.ics.uci.edu/dataset/560/seoul+bike+sharing+demand) dataset contains count of public bicycles rented per hour in the Seoul Bike Sharing System, with corresponding weather data and holiday information. A local copy is saved in the `data` folder. Since the original column names contain space and special characters, and are long as well, we rename the columns when we read the data in.
+
+```{r}
+df_raw <- read_csv(
+  here("data", "SeoulBikeData.csv"), 
+  col_names = c(
+    "Date", "Rent_Count", "Hour", 
+    "Temperature", "Humidity", "Wind_Speed", 
+    "Visibility", "Dew_Point", "Solar_Radiation", 
+    "Rainfall", "Snowfall", 
+    "Seasons", "Holiday","Functioning_Day"),
+  col_types = c("?", rep("n", 10), rep("c", 3)),
+  # skip first column (Date)
+  col_select = -1,
+  # skip first row
+  skip = 1)
+ 
+# show raw data frame
+df_raw
+
+# check structure
+str(df_raw)
+
+# list the unique values of the three categorical variables
+unique(df_raw$Seasons)
+unique(df_raw$Holiday)
+unique(df_raw$Functioning_Day)
+```
+
+Next, we will prepare the data by convert the three categorical columns `Seasons`, `Holiday` and `Functioning_Day` to factors with proper levels.
+
+For the response variable which is renamed to `Count`, we will create a new numeric variable `Many_Rents` as instructed in the home assignment.
+
+```{r}
+df <- df_raw %>% 
+  mutate(
+    Seasons = factor(Seasons, levels = c("Spring", "Summer", "Autumn", "Winter")),
+    Holiday = factor(Holiday, levels = c("No Holiday", "Holiday")),
+    Functioning_Day = factor(Functioning_Day , levels = c("No",  "Yes")),
+    Rent_Many = if_else(Rent_Count >= 700, "1", "0") %>% factor()
+  ) %>% 
+  relocate(Rent_Many, .after = Rent_Count
+  )
+
+# save column locations for each variable types
+lst_cols <- list(
+  y = 1:2,
+  x_num = 3:11,
+  x_cat = 12:14
+)
+
+# show data frame - only the columns of interest
+df[, c(lst_cols$y, lst_cols$x_cat)]
+
+# check structure - only the columns of interest
+str(df[, c(lst_cols$y, lst_cols$x_cat)])
+```
+
+## Split the Data
+
+We will use `caret::createDataPartition()` to create a 75/25 split of training and test sets.
+```{r}
+set.seed(2023)
+
+# split data
+trainIndex <- createDataPartition(df$Rent_Many, p = 0.75, list = FALSE)
+df_train <- df[trainIndex, ]
+df_test <- df[-trainIndex, ]
+```
+
+## Basic EDA
+
+A quick EDA will be done on the training set:
+
+- Response variable (numeric `Rent_Count` and its re-coded variable `Rent_Many`)
+- Categorical Predictors
+- Numeric Predictors
+
+### Response Variable
+
+```{r}
+# 5-number summary
+summary(df_train$Rent_Count)
+
+# histogram
+qplot(
+  df_train$Rent_Count, binwidth = 100,
+  main = "Histogram of Rented Bike Count", 
+  xlab = "Rented Bike Count",
+  ylab = "Count")
+```
+
+From the 5-number summary and the histogram, the response variable `Rent_Count` is a right skewed. 
+distribution. Using rent count 700 as a threshold, there are `r sum(df_train$Rent_Many == 1)` rows of data have rent counts greater or equal to 700 in the total of `r nrow(df_train)` records.
+
+```{r}
+# check balance
+table(df_train$Rent_Many)
+
+# boxplot
+qplot(
+  factor(Rent_Many), Rent_Count, 
+  data = df_train, 
+  geom = "boxplot",
+  main = "Boxplot of Rented Bike Count by Rent_More (>700 or not)", 
+  xlab = "Rented Bike Count >700?",
+  ylab = "Count")
+```
+
+The box plots provide a side-by-side comparison and shows that the group with more than 700 rents has larger variability and is highly right skewed.
+
+### Numeric Predictors
+
+```{r}
+# 5-number summary on the numeric predictors
+summary(df_train[, lst_cols$x_num])
+
+# histogram
+hist.data.frame(df_train[, lst_cols$x_num])
+
+# correlation plots
+corrplot(
+  cor(df_train[, c(1, lst_cols$x_num)]),
+  type = "lower",
+  method = "square",
+  addCoef.col = "white",
+  cl.ratio = 0.2, tl.srt = 45,
+  title = "Correlation amoung numeric predictors and rent count"
+  )
+```
+
+Some observations include:
+
+- `Hour` is very uniform
+- `Temperature` and `Humidity` are quite normal
+- `Wind_Speed` is slightly right skewed and `Dew_Point` is slightly left-skewed
+-  `Visibility`, `Solar_Radiation`, `Rainfall` and `Snowfall` are all very skewed. This is because of the climate condition of the area of the study. Most of days, it's sunny.
+- `Temperature` and `Dew_Point` are highly correlated
+- `Humidity` also shows correlation with `Visibility`, `Dew_Point` and `Solar_Radiation`
+
+### Categorical Predictors
+
+```{r}
+# one-way table on the categorical predictors
+summary(df_train[, lst_cols$x_cat])
+
+# two-way contingency table
+table(df$Functioning_Day, df$Seasons)
+table(df$Holiday, df$Seasons)
+table(df$Holiday, df$Functioning_Day)
+```
+
+For `Holiday` and `Functioning_Day`, we have unbalanced data. From the two-way tables, we can see in Summer and Winter, we don't any day that bikes are done all day (no functional hours). The sparseness of the categorical predictors can be visualized in a clear way in the following mosaic plot.
+
+```{r}
+ggplot(df) +
+  geom_mosaic(
+    aes(x = product(Seasons, Holiday), fill = Functioning_Day)
+  )
+```
+
+To visualize how these categorical predictors relate to the rent count, faceted box plots will be very helpful.
+
+```{r}
+df %>% ggplot(aes(Functioning_Day, Rent_Count)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.05) +
+  facet_grid(
+    rows = vars(Holiday),
+    cols = vars(Seasons)) +
+  labs(
+    title = "Boxplots of Rent Count by Seasons",
+    x = "Functional Day"
+  )
+
+```
+
+If we plot out the box plots on rent count over these categorical variable, we can see that there are fewer rent counts during winter (compared to other seasons) and on holidays (compared to non-holidays). Of course, on days when there are bike not functioning (`Functioning_Day = No`), there are fewer rent counts.
+
+```{r}
+names(df_train)
+```
+
+Based on then finding above, we plot the following scatterplot matrix with the predictors of interest:
+
+```{r}
+# pair-wise scatter plots with correlation 
+ggpairs(
+  df_train,
+  columns = c(1, 3:8),
+  mapping = ggplot2::aes(color = Holiday, alpha = 0.2),
+  upper = list(continuous = wrap("cor", size = 2.5)),
+  axisLabels = "none"
+)
+```
+
+## Fitting MLR Models
+
+We will fit the following candidate models on the numeric response `r names(df_train)[1]`:
+
+```{r}
+# candidate models
+model_candidates <- c(
+  ".",
+  "Hour +  Temperature + Humidity + Wind_Speed",
+  "Hour +  Temperature * Humidity + Wind_Speed",
+  "Hour +  Temperature * Humidity + Seasons + Holiday",
+  "(Hour + Temperature + Humidity)^2 + Seasons + Holiday",
+  "Hour * Holiday + Temperature * Humidity"
+)
+
+# make formula for lm models
+response_lm <- names(df_train)[1]
+models_lm <- response_lm %&% " ~ " %&% model_candidates 
+models_lm
+```
+
+For each candidate model, we will perform the linear regression on the train set, find the best one with cross validation, and use it to make predictions on the test set. The helper function returns a summary of metric in a data frame.
+
+```{r}
+# fit the models
+fit_lm <- fit_glm_models(response_lm, models_lm, df_train, df_test, "gaussian", "RMSE")
+fit_lm
+```
+
+The model "`r fit_lm$model[which(fit_lm$score == min(fit_lm$score))]`" has the smallest RMSE of `r fit_lm$score[which(fit_lm$score == min(fit_lm$score))]`
+
+## Fitting Logistic Regression Models
+
+We will fit the following candidate models on the 2-level categorical response `r names(df_train)[2]`:
+```{r}
+# make formula for lm models
+response_glm <- names(df_train)[2]
+models_glm <- response_glm %&% " ~ " %&% model_candidates 
+models_glm
+```
+
+For each candidate model, we will perform the logistic regression on the train set, find the best one with cross validation, and use it to make predictions on the test set. The helper function returns a summary of metric in a data frame.
+
+```{r, warning=FALSE}
+# fit the models
+fit_glm <- fit_glm_models(response_glm, models_glm, df_train, df_test, "binomial", "Accuracy")
+fit_glm
+```
+
+The model "`r fit_glm$model[which(fit_glm$score == max(fit_glm$score))]`" has the largest accuracy of `r fit_glm$score[which(fit_glm$score == max(fit_glm$score))]`
+
+## Conclusion
+
+Both of MLR models and logistic regression models give similar results. Among the candidate models, the models with only main effects (without interactions and higher-oder terms) perform best to predict the test set.
