@@ -1,4 +1,4 @@
-# Multiple Linear RegressionMLR and Logistic Models
+# Multiple Linear Regression (MLR) and Logistic Models
 
 Fit and predict with multiple linear regression models and, similarly, with logistic regression models.
 
@@ -53,12 +53,12 @@ We conduct an exploratory data analysis (EDA) on the [Seoul Bike Sharing Demand]
 1. Logistic Regression Models
 1. Conclusion
 
-![](./images/image1.png
+![](./images/image1.png)
 
-![](./images/image2.png
+![](./images/image2.png)
 
-![](./images/image3.png
+![](./images/image3.png)
 
-![](./images/image4.png
+![](./images/image4.png)
 
-![](./images/image5.png
+![](./images/image5.png)
